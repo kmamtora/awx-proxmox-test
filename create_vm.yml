@@ -17,16 +17,16 @@
     # Survey defaults (overridden by the AWX survey)
     vm_name: test-vm01
     vm_node: pve
-    vm_template: ubuntu-2404-template
+    vm_template: stratum-ubuntu-noble-template
     vm_storage: local-lvm
     vm_cores: 2
     vm_memory: 2048
-    vm_disk_size: 20G
+    vm_disk_size: 60G
     vm_bridge: vmbr0
     vm_ip: dhcp            # or e.g. 192.168.1.50/24
-    vm_gateway: ""
+    vm_gateway: "10.1.152.254"
     vm_user: ubuntu
-    vm_ssh_key: ""
+    vm_ssh_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINUZWsKDMMbE0mESlAhKsbOluEW+IgPCTHsyLZO5mS6K sandata-local"
 
   pre_tasks:
     # The default AWX execution environment does not ship proxmoxer.
