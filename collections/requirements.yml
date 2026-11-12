@@ -1,0 +1,5 @@
+---
+# AWX installs these automatically when the project syncs
+collections:
+  - name: community.proxmox
+    version: ">=1.0.0"

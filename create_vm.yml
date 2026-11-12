@@ -1,0 +1,85 @@
+---
+# Create a Proxmox VM by cloning a cloud-init template.
+# Variables come from the AWX survey and the "Proxmox API" credential.
+- name: Create VM in Proxmox
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    proxmox_api_defaults: &api
+      api_host: "{{ proxmox_host }}"
+      api_user: "{{ proxmox_user }}"
+      api_token_id: "{{ proxmox_token_id }}"
+      api_token_secret: "{{ proxmox_token_secret }}"
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+
+    # Survey defaults (overridden by the AWX survey)
+    vm_name: test-vm01
+    vm_node: pve
+    vm_template: ubuntu-2404-template
+    vm_storage: local-lvm
+    vm_cores: 2
+    vm_memory: 2048
+    vm_disk_size: 20G
+    vm_bridge: vmbr0
+    vm_ip: dhcp            # or e.g. 192.168.1.50/24
+    vm_gateway: ""
+    vm_user: ubuntu
+    vm_ssh_key: ""
+
+  pre_tasks:
+    # The default AWX execution environment does not ship proxmoxer.
+    # Long term: build a custom EE with it baked in (see README).
+    - name: Ensure proxmoxer is available
+      ansible.builtin.pip:
+        name: [proxmoxer, requests]
+        extra_args: --user
+
+  tasks:
+    - name: Clone template
+      community.proxmox.proxmox_kvm:
+        <<: *api
+        node: "{{ vm_node }}"
+        clone: "{{ vm_template }}"
+        name: "{{ vm_name }}"
+        full: true
+        storage: "{{ vm_storage }}"
+        timeout: 600
+      register: clone_result
+
+    - name: Configure CPU, memory, network and cloud-init
+      community.proxmox.proxmox_kvm:
+        <<: *api
+        node: "{{ vm_node }}"
+        name: "{{ vm_name }}"
+        update: true
+        cores: "{{ vm_cores | int }}"
+        memory: "{{ vm_memory | int }}"
+        net:
+          net0: "virtio,bridge={{ vm_bridge }}"
+        ipconfig:
+          ipconfig0: >-
+            {{ 'ip=dhcp' if vm_ip == 'dhcp'
+               else 'ip=' ~ vm_ip ~ (',gw=' ~ vm_gateway if vm_gateway else '') }}
+        ciuser: "{{ vm_user }}"
+        sshkeys: "{{ vm_ssh_key | default(omit, true) }}"
+
+    - name: Resize boot disk
+      community.proxmox.proxmox_disk:
+        <<: *api
+        vmid: "{{ clone_result.vmid }}"
+        disk: scsi0
+        size: "{{ vm_disk_size }}"
+        state: resized
+
+    - name: Start VM
+      community.proxmox.proxmox_kvm:
+        <<: *api
+        node: "{{ vm_node }}"
+        name: "{{ vm_name }}"
+        state: started
+
+    - name: Show result
+      ansible.builtin.debug:
+        msg: "VM {{ vm_name }} (id {{ clone_result.vmid }}) created on {{ vm_node }}"
