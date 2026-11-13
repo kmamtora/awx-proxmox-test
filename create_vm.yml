@@ -37,6 +37,21 @@
         extra_args: --user
 
   tasks:
+    # The Proxmox API only returns VMs the token has permission to see
+    - name: List VMs visible to the API token
+      community.proxmox.proxmox_vm_info:
+        <<: *api
+      register: visible_vms
+
+    - name: Fail clearly if the template is not visible
+      ansible.builtin.assert:
+        that: vm_template in (visible_vms.proxmox_vms | map(attribute='name') | list)
+        fail_msg: >-
+          Template '{{ vm_template }}' not visible to token
+          {{ proxmox_user }}!{{ proxmox_token_id }}. Visible VMs:
+          {{ visible_vms.proxmox_vms | map(attribute='name') | list }}.
+          Empty list = token has no permissions (Privilege Separation).
+
     - name: Clone template
       community.proxmox.proxmox_kvm:
         <<: *api
