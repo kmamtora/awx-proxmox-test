@@ -16,12 +16,6 @@
         that: target_host | length > 0
         fail_msg: "Set target_host to the VM's IP or hostname."
 
-    # password_hash needs passlib on newer Python versions
-    - name: Ensure passlib is available
-      ansible.builtin.pip:
-        name: passlib
-        extra_args: --user
-
     - name: Add VM to in-memory inventory
       ansible.builtin.add_host:
         name: "{{ target_host }}"
@@ -39,6 +33,8 @@
     new_user_ssh_key: ""     # optional public key
     new_user_sudo: true
     new_user_shell: /bin/bash
+    # AWX multiple-choice answers can arrive as a list, e.g. ["true"]
+    give_sudo: "{{ ([new_user_sudo] | flatten | first | default(true)) | bool }}"
 
   tasks:
     - name: Require a username
@@ -46,18 +42,23 @@
         that: new_user is match('^[a-z_][a-z0-9_-]{0,31}$')
         fail_msg: "'{{ new_user }}' is not a valid Linux username."
 
+    # Kept separate from the password step so real errors stay visible in the log
     - name: Create user
       ansible.builtin.user:
         name: "{{ new_user }}"
         shell: "{{ new_user_shell }}"
         create_home: true
-        groups: "{{ 'sudo' if new_user_sudo | bool else omit }}"
+        groups: "{{ 'sudo' if give_sudo else omit }}"
         append: true
-        password: >-
-          {{ new_user_password | password_hash('sha512')
-             if new_user_password | length > 0 else omit }}
-        update_password: always
-      no_log: "{{ new_user_password | length > 0 }}"
+
+    # chpasswd hashes on the VM itself, so no passlib is needed on the AWX side
+    - name: Set password
+      ansible.builtin.command:
+        cmd: chpasswd
+        stdin: "{{ new_user }}:{{ new_user_password }}"
+      when: new_user_password | length > 0
+      no_log: true
+      changed_when: true
 
     - name: Add SSH public key
       ansible.posix.authorized_key:
@@ -73,9 +74,9 @@
         mode: "0440"
         validate: visudo -cf %s
       when:
-        - new_user_sudo | bool
+        - give_sudo | bool
         - new_user_password | length == 0
 
     - name: Show result
       ansible.builtin.debug:
-        msg: "User {{ new_user }} created on {{ inventory_hostname }} (sudo: {{ new_user_sudo | bool }})"
+        msg: "User {{ new_user }} created on {{ inventory_hostname }} (sudo: {{ give_sudo }})"
