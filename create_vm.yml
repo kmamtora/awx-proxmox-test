@@ -118,6 +118,56 @@
         name: "{{ vm_name }}"
         state: started
 
+    # Static IP: known from the survey. DHCP: ask the QEMU guest agent
+    # (needs qemu-guest-agent installed in the template).
+    - name: Use static IP
+      ansible.builtin.set_fact:
+        vm_ssh_host: "{{ vm_ip | split('/') | first }}"
+      when: vm_ip != 'dhcp'
+
+    - name: Get DHCP IP from guest agent
+      ansible.builtin.uri:
+        url: "https://{{ proxmox_host }}:8006/api2/json/nodes/{{ vm_node }}/qemu/{{ clone_result.vmid }}/agent/network-get-interfaces"
+        headers:
+          Authorization: "PVEAPIToken={{ proxmox_user }}!{{ proxmox_token_id }}={{ proxmox_token_secret }}"
+        validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      register: agent_net
+      until: >-
+        agent_net.status == 200 and
+        (agent_net.json.data.result | map(attribute='ip-addresses', default=[]) | flatten
+         | selectattr('ip-address-type', 'eq', 'ipv4')
+         | rejectattr('ip-address', 'match', '^127\.') | list | length > 0)
+      retries: 30
+      delay: 10
+      failed_when: false
+      no_log: true
+      when: vm_ip == 'dhcp'
+
+    - name: Fail clearly if guest agent gave no IP
+      ansible.builtin.assert:
+        that: agent_net.status | default(0) == 200
+        fail_msg: >-
+          Could not get the VM's DHCP IP from the QEMU guest agent. Install
+          qemu-guest-agent in the template, or use a static IP in the survey.
+      when: vm_ip == 'dhcp'
+
+    - name: Set DHCP IP
+      ansible.builtin.set_fact:
+        vm_ssh_host: >-
+          {{ agent_net.json.data.result | map(attribute='ip-addresses', default=[]) | flatten
+             | selectattr('ip-address-type', 'eq', 'ipv4')
+             | rejectattr('ip-address', 'match', '^127\.')
+             | map(attribute='ip-address') | first }}
+      when: vm_ip == 'dhcp'
+
+    - name: Wait for SSH to come online
+      ansible.builtin.wait_for:
+        host: "{{ vm_ssh_host }}"
+        port: 22
+        search_regex: OpenSSH
+        delay: 10
+        timeout: "{{ vm_ssh_timeout | default(600) | int }}"
+
     - name: Show result
       ansible.builtin.debug:
-        msg: "VM {{ vm_name }} (id {{ clone_result.vmid }}) created on {{ vm_node }}"
+        msg: "VM {{ vm_name }} (id {{ clone_result.vmid }}) created on {{ vm_node }}, SSH ready: ssh {{ vm_user }}@{{ vm_ssh_host }}"
