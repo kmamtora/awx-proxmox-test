@@ -80,11 +80,32 @@
         ciuser: "{{ vm_user }}"
         sshkeys: "{{ vm_ssh_key | default(omit, true) }}"
 
+    # Templates may boot from scsi0, virtio0, sata0... so read it from the VM config
+    - name: Read cloned VM config
+      community.proxmox.proxmox_vm_info:
+        <<: *api
+        node: "{{ vm_node }}"
+        vmid: "{{ clone_result.vmid }}"
+        config: current
+      register: vm_info
+
+    - name: Detect boot disk
+      vars:
+        cfg: "{{ vm_info.proxmox_vms[0].config }}"
+        boot_order: "{{ (cfg.boot | default('')) | regex_findall('(?:scsi|virtio|sata|ide)\\d+') }}"
+        all_disks: >-
+          {{ cfg | dict2items
+             | selectattr('key', 'match', '^(scsi|virtio|sata|ide)\d+$')
+             | rejectattr('value', 'search', 'cloudinit|media=cdrom')
+             | map(attribute='key') | list }}
+      ansible.builtin.set_fact:
+        boot_disk: "{{ vm_disk | default((boot_order | intersect(all_disks) + all_disks) | first) }}"
+
     - name: Resize boot disk
       community.proxmox.proxmox_disk:
         <<: *api
         vmid: "{{ clone_result.vmid }}"
-        disk: scsi0
+        disk: "{{ boot_disk }}"
         size: "{{ vm_disk_size }}"
         state: resized
 
