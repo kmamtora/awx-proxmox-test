@@ -1,0 +1,74 @@
+---
+# Delete a Proxmox VM by name.
+# Variables come from the AWX survey and the "Proxmox API" credential.
+- name: Delete VM in Proxmox
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    proxmox_api_defaults: &api
+      api_host: "{{ proxmox_host }}"
+      api_user: "{{ proxmox_user }}"
+      api_token_id: "{{ proxmox_token_id }}"
+      api_token_secret: "{{ proxmox_token_secret }}"
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+
+    # Survey defaults (overridden by the AWX survey)
+    vm_name: ""
+    vm_name_confirm: ""
+
+  pre_tasks:
+    - name: Ensure proxmoxer is available
+      ansible.builtin.pip:
+        name: [proxmoxer, requests]
+        extra_args: --user
+
+  tasks:
+    - name: Require the VM name to be typed twice
+      ansible.builtin.assert:
+        that:
+          - vm_name | length > 0
+          - vm_name == vm_name_confirm
+        fail_msg: "Confirmation does not match VM name '{{ vm_name }}'. Nothing deleted."
+
+    - name: Look up VM
+      community.proxmox.proxmox_vm_info:
+        <<: *api
+        name: "{{ vm_name }}"
+      register: vm_info
+
+    - name: Stop if VM is missing, ambiguous, or a template
+      ansible.builtin.assert:
+        that:
+          - vm_info.proxmox_vms | length == 1
+          - not (vm_info.proxmox_vms[0].template | default(0) | bool)
+        fail_msg: >-
+          Refusing to delete: found {{ vm_info.proxmox_vms | length }} VM(s) named
+          '{{ vm_name }}' (must be exactly one, and not a template).
+
+    - name: Set VM facts
+      ansible.builtin.set_fact:
+        vm_id: "{{ vm_info.proxmox_vms[0].vmid }}"
+        vm_node_found: "{{ vm_info.proxmox_vms[0].node }}"
+
+    - name: Force stop VM
+      community.proxmox.proxmox_kvm:
+        <<: *api
+        node: "{{ vm_node_found }}"
+        vmid: "{{ vm_id }}"
+        state: stopped
+        force: true
+        timeout: 120
+
+    - name: Delete VM and its disks
+      community.proxmox.proxmox_kvm:
+        <<: *api
+        node: "{{ vm_node_found }}"
+        vmid: "{{ vm_id }}"
+        state: absent
+        timeout: 300
+
+    - name: Show result
+      ansible.builtin.debug:
+        msg: "VM {{ vm_name }} (id {{ vm_id }}) deleted from {{ vm_node_found }}"
