@@ -1,0 +1,81 @@
+---
+# Create a user on an existing VM over SSH.
+# Variables come from the AWX survey; SSH login comes from an AWX "Machine" credential.
+- name: Prepare target VM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # Survey defaults (overridden by the AWX survey)
+    target_host: ""          # VM IP or hostname, e.g. 10.1.152.201
+
+  tasks:
+    - name: Require a target host
+      ansible.builtin.assert:
+        that: target_host | length > 0
+        fail_msg: "Set target_host to the VM's IP or hostname."
+
+    # password_hash needs passlib on newer Python versions
+    - name: Ensure passlib is available
+      ansible.builtin.pip:
+        name: passlib
+        extra_args: --user
+
+    - name: Add VM to in-memory inventory
+      ansible.builtin.add_host:
+        name: "{{ target_host }}"
+        groups: new_vm
+
+- name: Create user on VM
+  hosts: new_vm
+  become: true
+  gather_facts: false
+
+  vars:
+    # Survey defaults (overridden by the AWX survey)
+    new_user: ""
+    new_user_password: ""    # optional; leave blank for key-only login
+    new_user_ssh_key: ""     # optional public key
+    new_user_sudo: true
+    new_user_shell: /bin/bash
+
+  tasks:
+    - name: Require a username
+      ansible.builtin.assert:
+        that: new_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+        fail_msg: "'{{ new_user }}' is not a valid Linux username."
+
+    - name: Create user
+      ansible.builtin.user:
+        name: "{{ new_user }}"
+        shell: "{{ new_user_shell }}"
+        create_home: true
+        groups: "{{ 'sudo' if new_user_sudo | bool else omit }}"
+        append: true
+        password: >-
+          {{ new_user_password | password_hash('sha512')
+             if new_user_password | length > 0 else omit }}
+        update_password: always
+      no_log: "{{ new_user_password | length > 0 }}"
+
+    - name: Add SSH public key
+      ansible.posix.authorized_key:
+        user: "{{ new_user }}"
+        key: "{{ new_user_ssh_key }}"
+        exclusive: false
+      when: new_user_ssh_key | length > 0
+
+    - name: Allow passwordless sudo
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/{{ new_user }}"
+        content: "{{ new_user }} ALL=(ALL) NOPASSWD:ALL\n"
+        mode: "0440"
+        validate: visudo -cf %s
+      when:
+        - new_user_sudo | bool
+        - new_user_password | length == 0
+
+    - name: Show result
+      ansible.builtin.debug:
+        msg: "User {{ new_user }} created on {{ inventory_hostname }} (sudo: {{ new_user_sudo | bool }})"
